@@ -1,8 +1,8 @@
 let glob = require('glob')
-let chalk = require('chalk')
 let series = require('run-series')
 let fs = require('fs')
 let path = require('path')
+let print = require('./_printer')
 let child = require('child_process')
 let shared = require('./shared')
 
@@ -12,49 +12,41 @@ let shared = require('./shared')
   - src/shared
   - src/views
 */
-module.exports = function install(basepath='src', callback) {
+module.exports = function install(params={}, callback) {
+  let {basepath, env, quiet, shell, timeout} = params
+  basepath = basepath || 'src'
+
   // eslint-disable-next-line
-  let pattern = path.join(basepath, '**', '@(package\.json|requirements\.txt|Gemfile)')
+  let pattern = `${basepath}/**/@(package\.json|requirements\.txt|Gemfile)`
 
   let files = glob.sync(pattern).filter(function filter(filePath) {
     if (filePath.includes('node_modules'))
       return false
-    if (filePath.includes(path.join('vendor', 'bundle')))
+    if (filePath.includes('vendor/bundle'))
       return false
     return true
   })
 
-  series(files.map(file=> {
+  let ops = files.map(file=> {
     let cwd = path.dirname(file)
-    let options = {cwd}
+    let options = {cwd, env, shell, timeout}
     return function hydration(callback) {
+      let start
 
-      // printer function
+      // Prints and executes the command
       function exec(cmd, opts, callback) {
-        console.log(chalk.green(cwd))
-        console.log(chalk.bold.green(cmd))
+        start = print.start({cwd, cmd, quiet})
         child.exec(cmd, opts, callback)
       }
 
-      // also a printer function
+      // Prints the result
       function done(err, stdout, stderr) {
-        if (err) {
-          console.log(chalk.bgRed.bold.white(err.message))
-          console.log(chalk.grey(err.stack))
-        }
-        if (stdout && stdout.length > 0) {
-          console.log(chalk.grey(stdout))
-        }
-        if (stderr && stderr.length > 0) {
-          console.log(chalk.yellow(stderr))
-        }
-        if (err) callback(err)
-        else callback()
+        print.done({err, stdout, stderr, start, quiet}, callback)
       }
 
       // TODO: I think we should consider what minimum version of node/npm this
       // module needs to use as the npm commands below have different behaviour
-      // depending on npm versio - and enshrine those in the package.json
+      // depending on npm version - and enshrine those in the package.json
       if (file.includes('package.json')) {
         if (fs.existsSync(path.join(cwd, 'package-lock.json'))) {
           exec(`npm ci`, options, done)
@@ -70,9 +62,10 @@ module.exports = function install(basepath='src', callback) {
       if (file.includes('Gemfile'))
         exec(`bundle install --path vendor/bundle`, options, done)
     }
-  }).concat([shared]),
-  function done(err) {
-    if (err) callback(err)
-    else callback()
   })
+
+  // If installing to everything, run shared operations
+  if (basepath === 'src') ops.push(shared)
+
+  series(ops, callback)
 }

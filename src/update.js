@@ -1,51 +1,42 @@
 let glob = require('glob')
-let chalk = require('chalk')
 let series = require('run-series')
 let path = require('path')
+let print = require('./_printer')
 let child = require('child_process')
 let shared = require('./shared')
 
 /**
  * updates dependencies to newer versions
 */
-module.exports = function update(basepath='src', callback) {
+module.exports = function update(params={}, callback) {
+  let {basepath, env, quiet, shell, timeout} = params
+  basepath = basepath || 'src'
+
   // eslint-disable-next-line
-  let pattern = path.join(basepath, '**', '@(package\.json|requirements\.txt|Gemfile)')
+  let pattern = `${basepath}/**/@(package\.json|requirements\.txt|Gemfile)`
 
   let files = glob.sync(pattern).filter(function filter(filePath) {
     if (filePath.includes('node_modules'))
       return false
-    if (filePath.includes(path.join('vendor', 'bundle')))
+    if (filePath.includes('vendor/bundle'))
       return false
     return true
   })
 
-  series(files.map(file=> {
+  let ops = files.map(file=> {
     let cwd = path.dirname(file)
-    let options = {cwd}
+    let options = {cwd, env, shell, timeout}
     return function updation(callback) {
 
       // printer function
       function exec(cmd, opts, callback) {
-        console.log(chalk.green(cwd))
-        console.log(chalk.bold.green(cmd))
+        print.start({cwd, cmd, quiet})
         child.exec(cmd, opts, callback)
       }
 
       // also a printer function
       function done(err, stdout, stderr) {
-        if (err) {
-          console.log(chalk.bgRed.bold.white(err.message))
-          console.log(chalk.grey(err.stack))
-        }
-        if (stdout && stdout.length > 0) {
-          console.log(chalk.grey(stdout))
-        }
-        if (stderr && stderr.length > 0) {
-          console.log(chalk.yellow(stderr))
-        }
-        if (err) callback(err)
-        else callback()
+        print.done({err, stdout, stderr, quiet}, callback)
       }
 
       if (file.includes('package.json')) {
@@ -61,8 +52,12 @@ module.exports = function update(basepath='src', callback) {
       if (file.includes('Gemfile'))
         exec(`bundle update`, options, done)
     }
-  }).concat([shared]),
-  function done(err) {
+  })
+
+  // If installing to everything, run shared operations
+  if (basepath === 'src') ops.push(shared)
+
+  series(ops, function done(err) {
     if (err) callback(err)
     else callback()
   })
